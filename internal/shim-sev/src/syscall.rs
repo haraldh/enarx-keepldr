@@ -377,8 +377,20 @@ impl SyscallHandler for Handler {
         }
     }
 
-    fn munmap(&mut self, _addr: UntrustedRef<u8>, _lenght: usize) -> sallyport::Result {
+    fn munmap(&mut self, addr: UntrustedRef<u8>, lenght: usize) -> sallyport::Result {
         self.trace("munmap", 2);
+
+        let addr = addr.validate_slice(lenght, self).ok_or(libc::EINVAL)?;
+
+        ALLOCATOR
+            .write()
+            .unmap_memory(
+                SHIM_PAGETABLE.write().deref_mut(),
+                VirtAddr::from_ptr(addr.as_ptr()),
+                lenght,
+            )
+            .map_err(|_| libc::EINVAL)?;
+
         Ok(Default::default())
     }
 
