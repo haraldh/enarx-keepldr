@@ -26,6 +26,7 @@ pub mod gdt;
 pub mod hostcall;
 /// Shared components for the shim and the loader
 pub mod hostlib;
+pub mod hostmap;
 pub mod no_std;
 pub mod pagetables;
 pub mod paging;
@@ -124,6 +125,9 @@ macro_rules! entry_point {
 
             switch_sallyport_to_unencrypted(c_bit_mask);
 
+            // Everything setup, so print works
+            SHIM_CAN_PRINT.store(true, Ordering::Relaxed);
+
             // Switch the stack to a guarded stack
             switch_shim_stack(f, gdt::INITIAL_STACK.pointer.as_u64())
         }
@@ -135,12 +139,8 @@ entry_point!(shim_main);
 /// The entry point for the shim
 pub extern "C" fn shim_main() -> ! {
     unsafe {
-        // Everything setup, so print works
-        SHIM_CAN_PRINT.store(true, Ordering::Relaxed);
-
         gdt::init();
     }
-
     payload::execute_payload()
 }
 
