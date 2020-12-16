@@ -7,6 +7,7 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::convert::TryInto;
+use core::fmt;
 use core::mem::MaybeUninit;
 use primordial::Register;
 use sallyport::{request, Block, Cursor, Request, Result};
@@ -24,6 +25,8 @@ pub const ARCH_GET_FS: libc::c_int = 0x1003;
 /// missing in libc
 pub const ARCH_GET_GS: libc::c_int = 0x1004;
 
+/// Fake pid returned by enarx
+pub const FAKE_PID: usize = 1000;
 /// Fake uid returned by enarx
 pub const FAKE_UID: usize = 1000;
 /// Fake gid returned by enarx
@@ -72,6 +75,9 @@ pub trait SyscallHandler: AddressValidator + Sized {
 
     /// Output tracing information about the syscall
     fn trace(&mut self, name: &str, argc: usize);
+
+    /// Log debug output
+    fn log(&mut self, _args: fmt::Arguments) {}
 
     /// Enarx syscall - get attestation
     fn get_attestation(
@@ -154,15 +160,20 @@ pub trait SyscallHandler: AddressValidator + Sized {
             libc::SYS_sigaltstack => self.sigaltstack(a.into(), b.into()),
             libc::SYS_getrandom => self.getrandom(a.into(), b.into(), usize::from(c) as _),
             libc::SYS_brk => self.brk(a.into()),
-            libc::SYS_ioctl => self.ioctl(usize::from(a) as _, b.into()),
+            libc::SYS_ioctl => self.ioctl(usize::from(a) as _, b.into(), c.into()),
             libc::SYS_mprotect => self.mprotect(a.into(), b.into(), usize::from(c) as _),
             libc::SYS_clock_gettime => self.clock_gettime(usize::from(a) as _, b.into()),
             libc::SYS_uname => self.uname(a.into()),
             libc::SYS_readlink => self.readlink(a.into(), b.into(), c.into()),
             libc::SYS_fstat => self.fstat(usize::from(a) as _, b.into()),
-            libc::SYS_fcntl => self.fcntl(usize::from(a) as _, usize::from(b) as _),
+            libc::SYS_fcntl => self.fcntl(
+                usize::from(a) as _,
+                usize::from(b) as _,
+                usize::from(c) as _,
+            ),
             libc::SYS_madvise => self.madvise(a.into(), b.into(), usize::from(c) as _),
             libc::SYS_poll => self.poll(a.into(), b.into(), usize::from(c) as _),
+            libc::SYS_getpid => self.getpid(),
             libc::SYS_getuid => self.getuid(),
             libc::SYS_getgid => self.getgid(),
             libc::SYS_geteuid => self.geteuid(),
@@ -175,12 +186,49 @@ pub trait SyscallHandler: AddressValidator + Sized {
             ),
             libc::SYS_bind => self.bind(usize::from(a) as _, b.into(), c.into()),
             libc::SYS_listen => self.listen(usize::from(a) as _, usize::from(b) as _),
+            libc::SYS_getsockname => self.getsockname(usize::from(a) as _, b.into(), c.into()),
             libc::SYS_accept => self.accept(usize::from(a) as _, b.into(), c.into()),
             libc::SYS_accept4 => {
                 self.accept4(usize::from(a) as _, b.into(), c.into(), usize::from(d) as _)
             }
             libc::SYS_connect => self.connect(usize::from(a) as _, b.into(), c.into()),
             libc::SYS_recvfrom => self.recvfrom(
+                usize::from(a) as _,
+                b.into(),
+                c.into(),
+                usize::from(d) as _,
+                e.into(),
+                f.into(),
+            ),
+            libc::SYS_pipe => self.pipe(a.into()),
+            libc::SYS_epoll_create1 => self.epoll_create1(a.try_into().map_err(|_| libc::EINVAL)?),
+            libc::SYS_epoll_ctl => self.epoll_ctl(
+                usize::from(a) as _,
+                usize::from(b) as _,
+                usize::from(c) as _,
+                d.into(),
+            ),
+            libc::SYS_epoll_wait => self.epoll_wait(
+                usize::from(a) as _,
+                b.into(),
+                usize::from(c) as _,
+                usize::from(d) as _,
+            ),
+            libc::SYS_epoll_pwait => self.epoll_pwait(
+                usize::from(a) as _,
+                b.into(),
+                usize::from(c) as _,
+                usize::from(d) as _,
+                e.into(),
+            ),
+            libc::SYS_setsockopt => self.setsockopt(
+                usize::from(a) as _,
+                usize::from(b) as _,
+                usize::from(c) as _,
+                d.into(),
+                usize::from(e) as _,
+            ),
+            libc::SYS_sendto => self.sendto(
                 usize::from(a) as _,
                 b.into(),
                 c.into(),
@@ -346,8 +394,8 @@ pub trait SyscallHandler: AddressValidator + Sized {
     }
 
     /// syscall
-    fn ioctl(&mut self, fd: libc::c_int, request: libc::c_ulong) -> Result {
-        self.trace("ioctl", 2);
+    fn ioctl(&mut self, fd: libc::c_int, request: libc::c_ulong, arg: usize) -> Result {
+        self.trace("ioctl", 3);
         match (fd as _, request as _) {
             (libc::STDIN_FILENO, libc::TIOCGWINSZ)
             | (libc::STDOUT_FILENO, libc::TIOCGWINSZ)
@@ -360,6 +408,16 @@ pub trait SyscallHandler: AddressValidator + Sized {
                 //eprintln!("SC> ioctl({}, {}), … = -EINVAL", fd, request);
                 Err(libc::EINVAL)
             }
+            (_, libc::FIONBIO) => unsafe {
+                let val = UntrustedRef::from(arg as *const libc::c_int)
+                    .validate(self)
+                    .ok_or(libc::EFAULT)?;
+                let c = self.new_cursor();
+                let (_, buf) = c.write(val).or(Err(libc::EMSGSIZE))?;
+                let host_virt = Self::translate_shim_to_host_addr(buf);
+
+                self.proxy(request!(libc::SYS_ioctl => fd, request, host_virt))
+            },
             _ => {
                 //eprintln!("SC> ioctl({}, {}), … = -EBADFD", fd, request);
                 Err(libc::EBADFD)
@@ -617,20 +675,36 @@ pub trait SyscallHandler: AddressValidator + Sized {
     }
 
     /// syscall
-    fn fcntl(&mut self, fd: libc::c_int, cmd: libc::c_int) -> Result {
-        self.trace("fcntl", 2);
+    fn fcntl(&mut self, fd: libc::c_int, cmd: libc::c_int, arg: libc::c_int) -> Result {
+        self.trace("fcntl", 3);
         match (fd, cmd) {
             (libc::STDIN_FILENO, libc::F_GETFL) => {
-                //eprintln!("SC> fcntl({}, F_GETFD) = 0x402 (flags O_RDWR|O_APPEND)", fd);
+                //eprintln!("SC> fcntl({}, F_GETFL) = 0x402 (flags O_RDWR|O_APPEND)", fd);
                 Ok([(libc::O_RDWR | libc::O_APPEND).into(), 0.into()])
             }
             (libc::STDOUT_FILENO, libc::F_GETFL) | (libc::STDERR_FILENO, libc::F_GETFL) => {
-                //eprintln!("SC> fcntl({}, F_GETFD) = 0x1 (flags O_WRONLY)", fd);
+                //eprintln!("SC> fcntl({}, F_GETFL) = 0x1 (flags O_WRONLY)", fd);
                 Ok([libc::O_WRONLY.into(), 0.into()])
             }
             (libc::STDIN_FILENO, _) | (libc::STDOUT_FILENO, _) | (libc::STDERR_FILENO, _) => {
                 //eprintln!("SC> fcntl({}, {}) = -EINVAL", fd, cmd);
                 Err(libc::EINVAL)
+            }
+            (_, libc::F_GETFD) => {
+                //self.trace("fcntl", 3);
+                unsafe { self.proxy(request!(libc::SYS_fcntl => fd, cmd)) }
+            }
+            (_, libc::F_SETFD) => {
+                //self.trace("fcntl", 3);
+                unsafe { self.proxy(request!(libc::SYS_fcntl => fd, cmd, arg)) }
+            }
+            (_, libc::F_GETFL) => {
+                //self.trace("fcntl", 3);
+                unsafe { self.proxy(request!(libc::SYS_fcntl => fd, cmd)) }
+            }
+            (_, libc::F_SETFL) => {
+                //self.trace("fcntl", 3);
+                unsafe { self.proxy(request!(libc::SYS_fcntl => fd, cmd, arg)) }
             }
             (_, _) => {
                 //eprintln!("SC> fcntl({}, {}) = -EBADFD", fd, cmd);
@@ -666,6 +740,12 @@ pub trait SyscallHandler: AddressValidator + Sized {
         }
 
         Ok(result)
+    }
+
+    /// syscall
+    fn getpid(&mut self) -> Result {
+        self.trace("getpid", 0);
+        Ok([FAKE_PID.into(), 0.into()])
     }
 
     /// Do a getuid() syscall
@@ -896,6 +976,225 @@ pub trait SyscallHandler: AddressValidator + Sized {
 
                 *addrlen = block_addrlen;
             }
+        }
+
+        Ok(ret)
+    }
+
+    /// syscall
+    fn pipe(&mut self, pipefd: UntrustedRefMut<libc::c_int>) -> Result {
+        self.trace("pipe", 1);
+        let pipefd = pipefd.validate_slice(2, self).ok_or(libc::EFAULT)?;
+        let c = self.new_cursor();
+
+        let (_, hostbuf) = c.alloc::<libc::c_int>(2).or(Err(libc::EMSGSIZE))?;
+        let hostbuf = hostbuf.as_ptr();
+        let host_virt = Self::translate_shim_to_host_addr(hostbuf);
+
+        let ret = unsafe { self.proxy(request!(libc::SYS_pipe => host_virt))? };
+
+        let c = self.new_cursor();
+        unsafe {
+            c.copy_into_slice(2, pipefd.as_mut())
+                .or(Err(libc::EFAULT))?;
+        }
+
+        Ok(ret)
+    }
+
+    /// syscall
+    fn epoll_create1(&mut self, flags: libc::c_int) -> Result {
+        self.trace("epoll_create1", 1);
+        unsafe { self.proxy(request!(libc::SYS_epoll_create1 => flags)) }
+    }
+
+    /// syscall
+    fn epoll_ctl(
+        &mut self,
+        epfd: libc::c_int,
+        op: libc::c_int,
+        fd: libc::c_int,
+        event: UntrustedRef<libc::epoll_event>,
+    ) -> Result {
+        self.trace("epoll_ctl", 4);
+
+        let event = event.validate(self).ok_or(libc::EFAULT)?;
+        self.log(format_args!("event = {:?}\n", event as *const _));
+        let c = self.new_cursor();
+        let (_, buf) = c.write(event).or(Err(libc::EMSGSIZE))?;
+        let host_virt = Self::translate_shim_to_host_addr(buf);
+        self.log(format_args!("host_virt = {:?}\n", host_virt as *const u8));
+
+        unsafe { self.proxy(request!(libc::SYS_epoll_ctl => epfd, op, fd, host_virt)) }
+    }
+
+    /// syscall
+    fn epoll_wait(
+        &mut self,
+        epfd: libc::c_int,
+        event: UntrustedRefMut<libc::epoll_event>,
+        maxevents: libc::c_int,
+        timeout: libc::c_int,
+    ) -> Result {
+        self.trace("epoll_wait", 4);
+
+        let maxevents: usize = maxevents as _;
+
+        let event = event.validate_slice(maxevents, self).ok_or(libc::EFAULT)?;
+
+        let c = self.new_cursor();
+
+        let (_, hostbuf) = c
+            .alloc::<libc::epoll_event>(maxevents)
+            .or(Err(libc::EMSGSIZE))?;
+        let hostbuf = hostbuf.as_ptr();
+        let host_virt = Self::translate_shim_to_host_addr(hostbuf);
+
+        let ret = unsafe {
+            self.proxy(request!(libc::SYS_epoll_wait => epfd, host_virt, maxevents, timeout))?
+        };
+
+        let result_len: usize = ret[0].into();
+
+        if maxevents < result_len {
+            self.attacked();
+        }
+
+        let c = self.new_cursor();
+        unsafe {
+            c.copy_into_slice(maxevents, &mut event[..result_len])
+                .or(Err(libc::EFAULT))?;
+        }
+
+        Ok(ret)
+    }
+
+    /// syscall
+    fn epoll_pwait(
+        &mut self,
+        epfd: libc::c_int,
+        event: UntrustedRefMut<libc::epoll_event>,
+        maxevents: libc::c_int,
+        timeout: libc::c_int,
+        _sigmask: UntrustedRef<libc::sigset_t>,
+    ) -> Result {
+        self.epoll_wait(epfd, event, maxevents, timeout)
+    }
+
+    /// syscall
+    fn setsockopt(
+        &mut self,
+        sockfd: libc::c_int,
+        level: libc::c_int,
+        optname: libc::c_int,
+        optval: UntrustedRef<u8>,
+        optlen: libc::socklen_t,
+    ) -> Result {
+        self.trace("setsockopt", 5);
+
+        let optval = optval.validate_slice(optlen, self).ok_or(libc::EFAULT)?;
+        let c = self.new_cursor();
+        let (_, buf) = c.copy_from_slice(optval).or(Err(libc::EMSGSIZE))?;
+        let host_virt = Self::translate_shim_to_host_addr(buf.as_ptr());
+
+        unsafe {
+            self.proxy(request!(libc::SYS_setsockopt => sockfd, level,optname, host_virt, optlen))
+        }
+    }
+
+    /// syscall
+    fn getsockname(
+        &mut self,
+        fd: libc::c_int,
+        addr: UntrustedRefMut<u8>,
+        addrlen: UntrustedRefMut<libc::socklen_t>,
+    ) -> Result {
+        self.trace("getsockname", 3);
+
+        let addrlen = addrlen.validate(self).ok_or(libc::EFAULT)?;
+
+        let c = self.new_cursor();
+
+        let (c, block_addr) = c.alloc::<u8>(*addrlen as _).or(Err(libc::EMSGSIZE))?;
+        let (_, block_addrlen) = c.write(addrlen).or(Err(libc::EINVAL))?;
+
+        let block_addr_ptr = block_addr[0].as_ptr();
+        let block_addr = Self::translate_shim_to_host_addr(block_addr_ptr);
+        let block_addrlen = Self::translate_shim_to_host_addr(block_addrlen as _);
+
+        let ret = unsafe {
+            self.proxy(request!(libc::SYS_getsockname => fd, block_addr, block_addrlen))
+        }?;
+
+        unsafe {
+            let c = self.new_cursor();
+            let (c, _) = c.alloc::<u8>(*addrlen as _).or(Err(libc::EMSGSIZE))?;
+            let (_, block_addrlen) = c.read::<libc::socklen_t>().or(Err(libc::EMSGSIZE))?;
+
+            let addr = addr.validate_slice(*addrlen, self).ok_or(libc::EFAULT)?;
+
+            let len = (*addrlen).min(block_addrlen) as usize;
+
+            let c = self.new_cursor();
+            c.copy_into_slice(*addrlen as _, &mut addr[..len])
+                .or(Err(libc::EMSGSIZE))?;
+
+            *addrlen = block_addrlen;
+        }
+
+        Ok(ret)
+    }
+
+    /// syscall
+    fn sendto(
+        &mut self,
+        sockfd: libc::c_int,
+        buf: UntrustedRef<u8>,
+        count: libc::size_t,
+        flags: libc::c_int,
+        dest_addr: UntrustedRef<u8>,
+        addrlen: libc::size_t,
+    ) -> Result {
+        self.trace("sendto", 6);
+
+        // Limit the write to `Block::buf_capacity()`
+        let count = usize::min(count, Block::buf_capacity());
+
+        let buf = buf.validate_slice(count, self).ok_or(libc::EFAULT)?;
+
+        let dest_addr = if dest_addr.as_ptr().is_null() {
+            None
+        } else {
+            Some(
+                dest_addr
+                    .validate_slice(addrlen, self)
+                    .ok_or(libc::EFAULT)?,
+            )
+        };
+
+        let c = self.new_cursor();
+        let (c, buf) = c.copy_from_slice(buf.as_ref()).or(Err(libc::EMSGSIZE))?;
+        let buf = buf.as_ptr();
+        let buf_host_virt = Self::translate_shim_to_host_addr(buf);
+
+        let addr_host_virt = if let Some(dest_addr) = dest_addr {
+            let (_, dest_addr) = c
+                .copy_from_slice(dest_addr.as_ref())
+                .or(Err(libc::EMSGSIZE))?;
+            let dest_addr = dest_addr.as_ptr();
+            Self::translate_shim_to_host_addr(dest_addr)
+        } else {
+            0
+        };
+
+        let ret = unsafe {
+            self.proxy(request!(libc::SYS_sendto => sockfd, buf_host_virt, count, flags, addr_host_virt, addrlen))?
+        };
+
+        let result_len: usize = ret[0].into();
+
+        if result_len > count {
+            self.attacked()
         }
 
         Ok(ret)

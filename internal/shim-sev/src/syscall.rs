@@ -7,10 +7,11 @@ use crate::allocator::ALLOCATOR;
 use crate::asm::_enarx_asm_triple_fault;
 use crate::attestation::SEV_SECRET;
 use crate::eprintln;
-use crate::hostcall::{HostCall, HOST_CALL_ALLOC};
+use crate::hostcall::{self, HostCall, HostFd, HOST_CALL_ALLOC};
 use crate::paging::SHIM_PAGETABLE;
 use crate::payload::{NEXT_BRK_RWLOCK, NEXT_MMAP_RWLOCK};
 use core::convert::TryFrom;
+use core::fmt::{self, Write};
 use core::mem::size_of;
 use core::ops::{Deref, DerefMut};
 use primordial::{Address, Register};
@@ -127,6 +128,19 @@ extern "sysv64" fn syscall_rust(
     };
 
     let ret = h.syscall(a, b, c, d, e, f, nr);
+
+    if nr != libc::SYS_write as _ && usize::from(a) != libc::STDERR_FILENO as _ {
+        match ret {
+            Err(e) => match e {
+                libc::EINVAL => eprintln!("= EINVAL"),
+                libc::EAGAIN => eprintln!("= EAGAIN"),
+                libc::EFAULT => eprintln!("= EFAULT"),
+                libc::ENOSYS => eprintln!("= ENOSYS"),
+                e => eprintln!("= Err({})", e),
+            },
+            Ok([rax, _]) => eprintln!("= {}", usize::from(rax)),
+        }
+    }
 
     match ret {
         Err(e) => X8664DoubleReturn {
@@ -461,5 +475,20 @@ impl SyscallHandler for Handler {
     ) -> sallyport::Result {
         self.trace("madvise", 3);
         Ok(Default::default())
+    }
+
+    fn log(&mut self, args: fmt::Arguments) {
+        let _ = self.write_fmt(args);
+    }
+}
+
+impl fmt::Write for Handler {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        hostcall::shim_write_all(
+            unsafe { HostFd::from_raw_fd(libc::STDOUT_FILENO) },
+            s.as_bytes(),
+        )
+        .map_err(|_| fmt::Error)?;
+        Ok(())
     }
 }
