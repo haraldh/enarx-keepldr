@@ -453,10 +453,9 @@ impl<'a> SyscallHandler for Handler<'a> {
         let report: Report = unsafe { target_info.get_report(&data) };
 
         // Request Quote from host
-        let report_slice = &[report];
         let report_bytes = unsafe {
             core::slice::from_raw_parts(
-                report_slice.as_ptr() as *const _ as *const u8,
+                &report as *const _ as *const u8,
                 core::mem::size_of::<Report>(),
             )
         };

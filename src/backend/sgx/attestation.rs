@@ -4,7 +4,9 @@
 // for examples of AESM Requests.
 
 use crate::protobuf::aesm_proto::{
-    Request, Request_SelectAttKeyIDRequest, Request_InitQuoteExRequest, Request_GetQuoteSizeExRequest, Request_GetQuoteExRequest, Response, Response_SelectAttKeyIDResponse, Response_InitQuoteExResponse, Response_GetQuoteSizeExResponse, Response_GetQuoteExResponse,
+    Request, Request_GetQuoteExRequest, Request_GetQuoteSizeExRequest, Request_InitQuoteExRequest,
+    Request_SelectAttKeyIDRequest, Response, Response_GetQuoteExResponse,
+    Response_GetQuoteSizeExResponse, Response_InitQuoteExResponse, Response_SelectAttKeyIDResponse,
 };
 use crate::syscall::{SGX_DUMMY_QUOTE, SGX_DUMMY_TI, SGX_QUOTE_SIZE, SGX_TI_SIZE};
 
@@ -16,47 +18,39 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::vec::Vec;
 
 use protobuf::Message;
+use sgx::attestation_types::report::Report;
 
 const AESM_SOCKET: &str = "/var/run/aesmd/aesm.socket";
 
 const AK_ID_LIST: [u8; 264] = [
-    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x8c, 0x4f,
-    0x57, 0x75, 0xd7, 0x96, 0x50, 0x3e, 0x96, 0x13,
-    0x7f, 0x77, 0xc6, 0x8a, 0x82, 0x9a, 0x00, 0x56,
-    0xac, 0x8d, 0xed, 0x70, 0x14, 0x0b, 0x08, 0x1b,
-    0x09, 0x44, 0x90, 0xc5, 0x7b, 0xff, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x8c, 0x4f,
+    0x57, 0x75, 0xd7, 0x96, 0x50, 0x3e, 0x96, 0x13, 0x7f, 0x77, 0xc6, 0x8a, 0x82, 0x9a, 0x00, 0x56,
+    0xac, 0x8d, 0xed, 0x70, 0x14, 0x0b, 0x08, 0x1b, 0x09, 0x44, 0x90, 0xc5, 0x7b, 0xff, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ];
 
-fn get_ak_id(out_buf: &mut [u8]) -> Result<Vec<u8>, Error> {
+pub fn get_algorithm_id(key_id: &Vec<u8>) -> u32 {
+    const ALGORITHM_OFFSET: usize = 154;
 
+    let mut bytes: [u8; 4] = Default::default();
+    bytes.copy_from_slice(&key_id[ALGORITHM_OFFSET..ALGORITHM_OFFSET + 4]);
+    u32::from_le_bytes(bytes)
+}
+
+fn get_ak_id(out_buf: &mut [u8]) -> Result<Vec<u8>, Error> {
     // If unable to connect to the AESM daemon, return dummy value
     let mut stream = match UnixStream::connect(AESM_SOCKET) {
         Ok(s) => s,
@@ -72,7 +66,7 @@ fn get_ak_id(out_buf: &mut [u8]) -> Result<Vec<u8>, Error> {
     msg.set_timeout(1_000_000);
     msg.set_att_key_id_list(AK_ID_LIST.to_vec());
     req.set_selectAttKeyIDReq(msg);
-    
+
     // Set up Writer
     let mut buf_wrtr = vec![0u8; size_of::<u32>()];
     match req.write_to_writer(&mut buf_wrtr) {
@@ -105,20 +99,26 @@ fn get_ak_id(out_buf: &mut [u8]) -> Result<Vec<u8>, Error> {
     let mut res: Response_SelectAttKeyIDResponse = pb_msg.take_selectAttKeyIDRes();
 
     if res.get_errorCode() != 0 {
-        panic!("Received error code {:?} in Select Att Key ID Response", res.get_errorCode());
+        panic!(
+            "Received error code {:?} in Select Att Key ID Response",
+            res.get_errorCode()
+        );
     }
 
     let attkeyid = res.take_selected_att_key_id();
 
     assert!(attkeyid != &[]);
-    println!("Attestation Key ID found successfully");
+    eprintln!(
+        "Attestation Key ID found successfully: {}",
+        get_algorithm_id(&attkeyid)
+    );
 
     Ok(attkeyid)
 }
 
 /// Fills the Target Info of the QE into the output buffer specified and
 /// returns the number of bytes written.
-fn get_ti(out_buf: &mut [u8], akid: Vec<u8>) -> Result<usize, Error> {
+fn get_ti_pub_key_id_size(out_buf: &mut [u8], akid: Vec<u8>) -> Result<u64, Error> {
     assert_eq!(out_buf.len(), SGX_TI_SIZE, "Invalid size of output buffer");
 
     // If unable to connect to the AESM daemon, return dummy value
@@ -126,7 +126,7 @@ fn get_ti(out_buf: &mut [u8], akid: Vec<u8>) -> Result<usize, Error> {
         Ok(s) => s,
         Err(_) => {
             out_buf.copy_from_slice(&SGX_DUMMY_TI);
-            return Ok(SGX_TI_SIZE);
+            return Ok(0);
         }
     };
 
@@ -152,7 +152,7 @@ fn get_ti(out_buf: &mut [u8], akid: Vec<u8>) -> Result<usize, Error> {
 
     let req_len = (buf_wrtr.len() - size_of::<u32>()) as u32;
     (&mut buf_wrtr[0..size_of::<u32>()]).copy_from_slice(&req_len.to_le_bytes());
-    
+
     // Send Request to AESM daemon
     stream.write_all(&buf_wrtr)?;
     stream.flush()?;
@@ -170,10 +170,81 @@ fn get_ti(out_buf: &mut [u8], akid: Vec<u8>) -> Result<usize, Error> {
     let res: Response_InitQuoteExResponse = pb_msg.take_initQuoteExRes();
 
     if res.get_errorCode() != 0 {
-        panic!("Init Quote Ex Reponse has error code: {}", res.get_errorCode());
+        panic!(
+            "Init Quote Ex Reponse has error code: {}",
+            res.get_errorCode()
+        );
+    }
+
+    Ok(res.get_pub_key_id_size())
+}
+
+/// Fills the Target Info of the QE into the output buffer specified and
+/// returns the number of bytes written.
+fn get_ti(out_buf: &mut [u8], akid: Vec<u8>) -> Result<usize, Error> {
+    assert_eq!(out_buf.len(), SGX_TI_SIZE, "Invalid size of output buffer");
+
+    let buf_size = get_ti_pub_key_id_size(out_buf, akid.clone())?;
+
+    // If unable to connect to the AESM daemon, return dummy value
+    let mut stream = match UnixStream::connect(AESM_SOCKET) {
+        Ok(s) => s,
+        Err(_) => {
+            out_buf.copy_from_slice(&SGX_DUMMY_TI);
+            return Ok(SGX_TI_SIZE);
+        }
+    };
+
+    // Set an Init Quote Ex Request
+    let mut req = Request::new();
+    let mut msg = Request_InitQuoteExRequest::new();
+    msg.set_timeout(1_000_000);
+    msg.set_b_pub_key_id(true);
+    msg.set_buf_size(buf_size);
+    msg.set_att_key_id(akid);
+    req.set_initQuoteExReq(msg);
+
+    // Set up Writer
+    let mut buf_wrtr = vec![0u8; size_of::<u32>()];
+    match req.write_to_writer(&mut buf_wrtr) {
+        Ok(_) => {}
+        Err(e) => {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("Invalid Init Quote Ex Request: {:#?}", e),
+            ));
+        }
+    }
+
+    let req_len = (buf_wrtr.len() - size_of::<u32>()) as u32;
+    (&mut buf_wrtr[0..size_of::<u32>()]).copy_from_slice(&req_len.to_le_bytes());
+
+    // Send Request to AESM daemon
+    stream.write_all(&buf_wrtr)?;
+    stream.flush()?;
+
+    // Receive Response
+    let mut res_len_bytes = [0u8; 4];
+    stream.read_exact(&mut res_len_bytes)?;
+    let res_len = u32::from_le_bytes(res_len_bytes);
+
+    let mut res_bytes = vec![0; res_len as usize];
+    stream.read_exact(&mut res_bytes)?;
+
+    // Parse Response and extract TargetInfo
+    let mut pb_msg: Response = protobuf::parse_from_bytes(&res_bytes)?;
+    let res: Response_InitQuoteExResponse = pb_msg.take_initQuoteExRes();
+
+    if res.get_errorCode() != 0 {
+        panic!(
+            "Init Quote Ex Reponse has error code: {}",
+            res.get_errorCode()
+        );
     }
 
     let ti = res.get_target_info();
+    eprintln!("ti = {:?}", ti);
+    eprintln!("ti.len() = {:?}", ti.len());
 
     assert_eq!(
         ti.len(),
@@ -182,12 +253,11 @@ fn get_ti(out_buf: &mut [u8], akid: Vec<u8>) -> Result<usize, Error> {
     );
 
     out_buf.copy_from_slice(ti);
-    println!("TargetInfo obtained and Init succeeded.");
+    eprintln!("TargetInfo obtained and Init succeeded.");
     Ok(ti.len())
 }
 
 fn get_quote_size(akid: Vec<u8>) -> Result<usize, std::io::Error> {
-    
     // If unable to connect to the AESM daemon, return dummy value
     let mut stream = match UnixStream::connect(AESM_SOCKET) {
         Ok(s) => s,
@@ -199,7 +269,7 @@ fn get_quote_size(akid: Vec<u8>) -> Result<usize, std::io::Error> {
     // Set a Get Quote Size Ex Request
     let mut req = Request::new();
     let mut msg = Request_GetQuoteSizeExRequest::new();
-    msg.set_att_key_id(akid.clone());
+    msg.set_att_key_id(akid);
     msg.set_timeout(1_000_000);
     req.set_getQuoteSizeExReq(msg);
 
@@ -218,8 +288,8 @@ fn get_quote_size(akid: Vec<u8>) -> Result<usize, std::io::Error> {
     let req_len = (buf_wrtr.len() - size_of::<u32>()) as u32;
     (&mut buf_wrtr[0..size_of::<u32>()]).copy_from_slice(&req_len.to_le_bytes());
 
-//    let mut o = [0u8; 512];
-//    get_ti(&mut o, akid.clone());
+    //    let mut o = [0u8; 512];
+    //    get_ti(&mut o, akid.clone());
 
     // Send Request to AESM daemon
     stream.write_all(&buf_wrtr)?;
@@ -236,6 +306,7 @@ fn get_quote_size(akid: Vec<u8>) -> Result<usize, std::io::Error> {
     // Parse Response and extract Quote Size
     let mut pb_msg: Response = protobuf::parse_from_bytes(&res_bytes)?;
     let res: Response_GetQuoteSizeExResponse = pb_msg.take_getQuoteSizeExRes();
+
     if res.get_errorCode() != 0 {
         return Err(Error::new(
             ErrorKind::InvalidData,
@@ -251,14 +322,19 @@ fn get_quote_size(akid: Vec<u8>) -> Result<usize, std::io::Error> {
         panic!("Could not get quote size");
     }
 
-    println!("Quote size found successfully: {:?}", size);
+    eprintln!("Quote size found successfully: {:?}", size);
 
     Ok(size as usize)
 }
 
 /// Fills the Quote obtained from the AESMD for the Report specified into
 /// the output buffer specified and returns the number of bytes written.
-fn get_quote(report: &[u8], size: usize, akid: Vec<u8>, out_buf: &mut [u8]) -> Result<usize, std::io::Error> {
+fn get_quote(
+    report: &[u8],
+    size: usize,
+    akid: Vec<u8>,
+    out_buf: &mut [u8],
+) -> Result<usize, std::io::Error> {
     assert_eq!(
         out_buf.len(),
         SGX_QUOTE_SIZE,
@@ -312,7 +388,7 @@ fn get_quote(report: &[u8], size: usize, akid: Vec<u8>, out_buf: &mut [u8]) -> R
 
     // Parse Response and extract Quote
     let mut pb_msg: Response = protobuf::parse_from_bytes(&res_bytes)?;
-    let res: Response_GetQuoteExResponse = pb_msg.take_getQuoteExRes();
+    let mut res: Response_GetQuoteExResponse = pb_msg.take_getQuoteExRes();
     if res.get_errorCode() != 0 {
         return Err(Error::new(
             ErrorKind::InvalidData,
@@ -322,7 +398,7 @@ fn get_quote(report: &[u8], size: usize, akid: Vec<u8>, out_buf: &mut [u8]) -> R
             ),
         ));
     }
-    let quote = res.get_quote();
+    let quote = res.take_quote();
     if quote.is_empty() {
         return Err(Error::new(
             ErrorKind::InvalidData,
@@ -332,9 +408,8 @@ fn get_quote(report: &[u8], size: usize, akid: Vec<u8>, out_buf: &mut [u8]) -> R
 
     assert_eq!(quote.len(), out_buf.len(), "Unable to copy Quote to buffer");
     out_buf.copy_from_slice(&quote);
-    println!("quote len: {:?}", quote.len());
-    println!("quote:\n {:?}", quote);
-    std::process::exit(0);
+    eprintln!("quote len: {:?}", quote.len());
+    eprintln!("quote:\n {:?}", quote);
 
     Ok(quote.len())
 }
@@ -348,19 +423,25 @@ pub fn get_attestation(
     buf: usize,
     buf_len: usize,
 ) -> Result<usize, Error> {
+    static mut ak_id: Option<Vec<u8>> = None;
+
     let out_buf: &mut [u8] = unsafe { from_raw_parts_mut(buf as *mut u8, buf_len) };
 
     if nonce == 0 {
         let akid = get_ak_id(out_buf).unwrap();
         assert!(!akid.is_empty());
-        println!("{:?}", akid.clone());
+        eprintln!("nonce=0, akid = {:?}", &akid);
+        unsafe {
+            ak_id.replace(akid.clone());
+        }
         get_ti(out_buf, akid)
     } else {
-        let akid = get_ak_id(out_buf).unwrap();
+        let akid = unsafe { ak_id.as_ref().unwrap().clone() };
         assert!(!akid.is_empty());
-        println!("{:?}", akid.clone());
+        eprintln!("akid = {:?}", &akid);
         let size = get_quote_size(akid.clone()).unwrap();
         assert!(size != 0);
+        eprintln!("nonce_len = {}", nonce_len);
         let report: &[u8] = unsafe { from_raw_parts(nonce as *const u8, nonce_len) };
         get_quote(report, size, akid.clone(), out_buf)
     }
